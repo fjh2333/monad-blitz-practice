@@ -1,0 +1,13 @@
+.env
+.env.*
+*.pem
+.DS_Store
+secrets/
+**/cache/
+**/out/
+**/broadcast/
+**/lib/
+node_modules/
+.devin/
+*.code-workspace
+**/.gitmodules
