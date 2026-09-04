@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HackCheck - 学习打卡</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+        }
+        h1 {
+            text-align: center;
+            font-size: 28px;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #836ef9, #ec4899);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            font-size: 14px;
+            margin-bottom: 32px;
+        }
+        .card {
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+        .card h2 {
+            font-size: 16px;
+            color: #aaa;
+            margin-bottom: 16px;
+        }
+        button {
+            background: #836ef9;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 15px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s;
+        }
+        button:hover { background: #6d4fd8; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        button.connect {
+            background: #2563eb;
+        }
+        button.connect:hover { background: #1d4ed8; }
+        input[type="text"] {
+            width: 100%;
+            background: #0a0a0a;
+            border: 1px solid #333;
+            color: #e0e0e0;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 15px;
+            margin-bottom: 12px;
+        }
+        input[type="text"]:focus { outline: none; border-color: #836ef9; }
+        .status {
+            font-size: 13px;
+            color: #888;
+            margin-top: 8px;
+            word-break: break-all;
+        }
+        .status.success { color: #4ade80; }
+        .status.error { color: #f87171; }
+        .record {
+            background: #0a0a0a;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 12px;
+        }
+        .record-note {
+            font-size: 15px;
+            margin-bottom: 4px;
+        }
+        .record-time {
+            font-size: 12px;
+            color: #666;
+        }
+        .empty {
+            color: #666;
+            font-size: 14px;
+            text-align: center;
+            padding: 20px;
+        }
+        .wallet-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .wallet-address {
+            font-size: 13px;
+            color: #888;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HackCheck</h1>
+        <p class="subtitle">学习打卡证明 - 记录在 Monad 链上</p>
+
+        <!-- 连接钱包 -->
+        <div class="card">
+            <h2>1. 连接钱包</h2>
+            <div class="wallet-info">
+                <span class="wallet-address" id="walletAddress">未连接</span>
+            </div>
+            <button class="connect" id="connectBtn" onclick="connectWallet()">连接 MetaMask</button>
+            <div class="status" id="connectStatus"></div>
+        </div>
+
+        <!-- 打卡 -->
+        <div class="card">
+            <h2>2. 打卡 - 记录今天学了什么</h2>
+            <input type="text" id="noteInput" placeholder="例如：今天学了 Solidity 的 mapping" disabled>
+            <button id="checkinBtn" onclick="checkIn()" disabled>上链打卡</button>
+            <div class="status" id="checkinStatus"></div>
+        </div>
+
+        <!-- 查看记录 -->
+        <div class="card">
+            <h2>3. 查看打卡记录</h2>
+            <button id="loadBtn" onclick="loadRecords()" disabled>刷新记录</button>
+            <div id="recordsList">
+                <div class="empty">连接钱包后查看记录</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ethers.js via CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+    <script>
+        // 合约地址和 ABI
+        const CONTRACT_ADDRESS = "0xBDb7B884Fe93C0e96debfF651015db0730121db7";
+        const MONAD_CHAIN_ID = 10143;
+
+        // 合约 ABI（只列出我们要用的函数）
+        const ABI = [
+            "function checkin(string memory note) public",
+            "function getCheckIn(address user, uint256 index) public view returns (string memory note, uint256 time)",
+            "function checkIns(address, uint256) public view returns (string note, uint256 checkInTime)"
+        ];
+
+        let provider, signer, contract, userAddress;
+
+        // 连接钱包
+        async function connectWallet() {
+            const statusEl = document.getElementById("connectStatus");
+            try {
+                if (typeof window.ethereum === "undefined") {
+                    statusEl.className = "status error";
+                    statusEl.textContent = "请先安装 MetaMask";
+                    return;
+                }
+
+                // 请求连接钱包
+                const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+                userAddress = accounts[0];
+
+                // 检查是否在 Monad 测试网，不对就自动切换
+                let chainId = parseInt(await window.ethereum.request({ method: "eth_chainId" }), 16);
+                if (chainId !== MONAD_CHAIN_ID) {
+                    statusEl.className = "status";
+                    statusEl.textContent = "正在切换到 Monad Testnet...";
+                    try {
+                        await window.ethereum.request({
+                            method: "wallet_switchEthereumChain",
+                            params: [{ chainId: "0x279f" }], // 10143 的十六进制
+                        });
+                    } catch (switchErr) {
+                        // 钱包里没有这个网络时，自动添加
+                        if (switchErr.code === 4902) {
+                            await window.ethereum.request({
+                                method: "wallet_addEthereumChain",
+                                params: [{
+                                    chainId: "0x279f",
+                                    chainName: "Monad Testnet",
+                                    rpcUrls: ["https://testnet-rpc.monad.xyz"],
+                                    nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
+                                    blockExplorerUrls: ["https://testnet.monadvision.com"],
+                                }],
+                            });
+                        } else {
+                            throw switchErr;
+                        }
+                    }
+                    chainId = parseInt(await window.ethereum.request({ method: "eth_chainId" }), 16);
+                    if (chainId !== MONAD_CHAIN_ID) {
+                        statusEl.className = "status error";
+                        statusEl.textContent = "网络切换失败，请手动切换到 Monad Testnet";
+                        return;
+                    }
+                }
+
+                // 初始化 ethers
+                provider = new ethers.BrowserProvider(window.ethereum);
+                signer = await provider.getSigner();
+                contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+
+                // 更新 UI
+                document.getElementById("walletAddress").textContent = userAddress.slice(0, 6) + "..." + userAddress.slice(-4);
+                document.getElementById("connectBtn").textContent = "已连接";
+                document.getElementById("connectBtn").disabled = true;
+                document.getElementById("noteInput").disabled = false;
+                document.getElementById("checkinBtn").disabled = false;
+                document.getElementById("loadBtn").disabled = false;
+
+                statusEl.className = "status success";
+                statusEl.textContent = "连接成功，网络: Monad Testnet";
+            } catch (err) {
+                statusEl.className = "status error";
+                statusEl.textContent = "连接失败: " + err.message;
+            }
+        }
+
+        // 打卡
+        async function checkIn() {
+            const statusEl = document.getElementById("checkinStatus");
+            const note = document.getElementById("noteInput").value.trim();
+
+            if (!note) {
+                statusEl.className = "status error";
+                statusEl.textContent = "请输入打卡内容";
+                return;
+            }
+
+            try {
+                statusEl.className = "status";
+                statusEl.textContent = "正在发送交易...";
+                document.getElementById("checkinBtn").disabled = true;
+
+                // 调用合约 checkin 函数
+                const tx = await contract.checkin(note);
+                statusEl.textContent = "交易已发送，等待确认... Hash: " + tx.hash.slice(0, 10) + "...";
+
+                // 等待交易确认
+                await tx.wait();
+                statusEl.className = "status success";
+                statusEl.textContent = "打卡成功！交易哈希: " + tx.hash;
+
+                // 清空输入框
+                document.getElementById("noteInput").value = "";
+
+                // 自动刷新记录
+                loadRecords();
+            } catch (err) {
+                statusEl.className = "status error";
+                statusEl.textContent = "打卡失败: " + err.message;
+            } finally {
+                document.getElementById("checkinBtn").disabled = false;
+            }
+        }
+
+        // 加载打卡记录
+        async function loadRecords() {
+            const listEl = document.getElementById("recordsList");
+            listEl.innerHTML = '<div class="empty">加载中...</div>';
+
+            try {
+                // 先逐条探测，直到越界报错，统计有多少条记录
+                const records = [];
+                for (let i = 0; i < 100; i++) {
+                    try {
+                        const c = await contract.checkIns(userAddress, i);
+                        records.push({ note: c.note, time: Number(c.checkInTime) });
+                    } catch {
+                        break; // 越界了，说明没有更多记录
+                    }
+                }
+
+                if (records.length === 0) {
+                    listEl.innerHTML = '<div class="empty">还没有打卡记录</div>';
+                    return;
+                }
+
+                // 显示所有记录（最新的在前）
+                let html = "";
+                for (let i = records.length - 1; i >= 0; i--) {
+                    const date = new Date(records[i].time * 1000);
+                    const timeStr = date.toLocaleString("zh-CN");
+                    html += `
+                        <div class="record">
+                            <div class="record-note">${escapeHtml(records[i].note)}</div>
+                            <div class="record-time">${timeStr}</div>
+                        </div>
+                    `;
+                }
+                listEl.innerHTML = html;
+            } catch (err) {
+                listEl.innerHTML = '<div class="empty">加载失败: ' + err.message + '</div>';
+            }
+        }
+
+        // HTML 转义，防止 XSS
+        function escapeHtml(text) {
+            const div = document.createElement("div");
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
