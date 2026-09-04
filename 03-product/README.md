@@ -1,11 +1,66 @@
-# 03-product（第 3 天或赛前，可选）
+## Foundry
 
-仅当第 2 天 Bank 已在测试网完成存取之后，才在这里开产品。
+**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
 
-推荐默认产品：**HackCheck 打卡证明**（合约复杂度 ≈ Bank，故事和 Demo 强很多）。
-不要在这里开 DEX / NFT 市场 / 新赛道。
+Foundry consists of:
 
-```bash
-cd "/Users/fjh/code/local/web3/monad-blitz/03-product"
-forge init . --no-commit
+- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
+- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
+- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
+- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+
+## Documentation
+
+https://book.getfoundry.sh/
+
+## Usage
+
+### Build
+
+```shell
+$ forge build
+```
+
+### Test
+
+```shell
+$ forge test
+```
+
+### Format
+
+```shell
+$ forge fmt
+```
+
+### Gas Snapshots
+
+```shell
+$ forge snapshot
+```
+
+### Anvil
+
+```shell
+$ anvil
+```
+
+### Deploy
+
+```shell
+$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+```
+
+### Cast
+
+```shell
+$ cast <subcommand>
+```
+
+### Help
+
+```shell
+$ forge --help
+$ anvil --help
+$ cast --help
 ```
