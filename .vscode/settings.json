@@ -1,0 +1,8 @@
+{
+  "solidity.remappings": [
+    "forge-std/=lib/forge-std/src/"
+  ],
+  "solidity.remappingsUnix": [
+    "forge-std/=lib/forge-std/src/"
+  ]
+}
