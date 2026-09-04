@@ -38,4 +38,22 @@ contract HackCheckTest is Test {
         vm.expectRevert();
         hackcheck.getCheckIn(address(this), 0);
     }
+
+    function test_MintNFT() public {
+        // 打卡三次
+        hackcheck.checkin("first checkin");
+        hackcheck.checkin("second checkin");
+        hackcheck.checkin("third checkin");
+        // 查看是否获得 NFT
+        assertEq(hackcheck.balanceOf(address(this)), 1);
+    }
+
+    function test_NoMintBeforeThreshold() public {
+        //「打卡 1 次后 balanceOf 应该是 0」的用例，验证不会提前 mint
+        hackcheck.checkin("first");
+        assertEq(hackcheck.balanceOf(address(this)), 0);  // 1 次不该有徽章
+    }
+
+
+
 }
