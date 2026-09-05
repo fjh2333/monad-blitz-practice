@@ -111,7 +111,12 @@ async function connect() {
   } catch(e) { el.className="status err"; el.textContent = "失败: " + e.message; }
 }
 
-window.ethereum?.on?.("accountsChanged", (a) => { me = a[0]; if (gameId) refresh(); });
+window.ethereum?.on?.("accountsChanged", (a) => {
+  me = a[0];
+  const btn = document.getElementById("connectBtn");
+  if (btn && me) { btn.textContent = "已连接 " + me.slice(0,6) + "…" + me.slice(-4); }
+  if (gameId) refresh();
+});
 
 async function createGame() {
   const el = document.getElementById("lobbyStatus");
