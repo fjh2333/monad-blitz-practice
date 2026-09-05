@@ -50,6 +50,7 @@ input[type=number] { width:100%; background:#0a0a0a; border:1px solid #333; colo
       <button class="small" id="createBtn" onclick="createGame()">创建新局（执白）</button>
       <input type="number" id="joinId" placeholder="局号" style="width:100px;background:#0a0a0a;border:1px solid #333;color:#e0e0e0;padding:8px;border-radius:8px;">
       <button class="small" id="joinBtn" onclick="joinGame()">加入（执黑）</button>
+      <button class="small" onclick="enterById()">直接进入对局</button>
     </div>
     <div class="status" id="lobbyStatus"></div>
   </div>
@@ -115,11 +116,20 @@ window.ethereum?.on?.("accountsChanged", (a) => { me = a[0]; if (gameId) refresh
 async function createGame() {
   const el = document.getElementById("lobbyStatus");
   el.className="status"; el.textContent="发送 create 交易…";
-  const tx = await withGas(contract.create());
-  await tx.wait();
-  const rc = await provider.getTransactionReceipt(tx.hash);
-  gameId = Number(rc.logs[0].topics[1]); // Created event 第一个 indexed
-  enterGame();
+  try {
+    const tx = await withGas(contract.create());
+    el.textContent = "已确认，等待上链… hash: " + tx.hash.slice(0,10) + "…";
+    const rc = await tx.wait();
+    let id = 0;
+    for (const log of rc.logs) {
+      try { const parsed = contract.interface.parseLog(log); if (parsed?.name === "Created") { id = Number(parsed.args[0]); break; } } catch(_) {}
+    }
+    if (!id) id = Number(await contract.gameCount()); // 兜底：读最新局号
+    gameId = id;
+    enterGame();
+  } catch(e) {
+    el.className="status err"; el.textContent = "create 失败: " + (e?.shortMessage || e.message);
+  }
 }
 
 async function joinGame() {
@@ -127,8 +137,20 @@ async function joinGame() {
   gameId = Number(document.getElementById("joinId").value);
   if (!gameId) { el.className="status err"; el.textContent="请输入局号"; return; }
   el.className="status"; el.textContent="发送 join 交易…";
-  const tx = await withGas(contract.join(gameId));
-  await tx.wait();
+  try {
+    const tx = await withGas(contract.join(gameId));
+    el.textContent = "已确认，等待上链…";
+    await tx.wait();
+    enterGame();
+  } catch(e) {
+    el.className="status err"; el.textContent = "join 失败: " + (e?.shortMessage || e.message);
+  }
+}
+
+function enterById() {
+  const id = Number(document.getElementById("joinId").value);
+  if (!id) { const el = document.getElementById("lobbyStatus"); el.className="status err"; el.textContent="请先在局号框输入要进入的局号"; return; }
+  gameId = id;
   enterGame();
 }
 
