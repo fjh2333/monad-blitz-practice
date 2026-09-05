@@ -17,6 +17,7 @@ button:hover { background:#6d4fd8; }
 button:disabled { background:#3a3a3a; color:#777; cursor:not-allowed; }
 button.connect { background:#2563eb; }
 button.small { width:auto; padding:8px 14px; font-size:13px; }
+button.tiny { width:auto; padding:4px 10px; font-size:12px; background:#4ade80; color:#0a0a0a; font-weight:700; }
 input[type=number] { width:110px; background:#0a0a0a; border:1px solid #333; color:#e0e0e0; padding:8px; border-radius:8px; font-size:14px; }
 .status { font-size:12px; color:#888; margin-top:8px; word-break:break-all; min-height:16px; }
 .status.ok { color:#4ade80; } .status.err { color:#f87171; }
@@ -34,10 +35,13 @@ input[type=number] { width:110px; background:#0a0a0a; border:1px solid #333; col
 .cell.hint.hintcap::after { width:80%; height:80%; background:transparent; border:3px solid #f87171; border-radius:8px; }
 .piece-w { color:#fff; text-shadow:0 0 3px #000; }
 .piece-b { color:#111; text-shadow:0 0 2px #888; }
-.row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+.row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; align-items:center; }
 #info { font-size:13px; color:#bbb; margin:6px 0; }
 #timer { font-family:monospace; color:#fbbf24; }
 .hidden { display:none; }
+.gamerow { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid #222; font-size:13px; color:#ccc; }
+.gamerow:last-child { border-bottom:none; }
+#gameList { margin-top:10px; max-height:260px; overflow-y:auto; }
 </style>
 </head>
 <body>
@@ -52,18 +56,20 @@ input[type=number] { width:110px; background:#0a0a0a; border:1px solid #333; col
   </div>
 
   <div class="card hidden" id="lobby">
-    <h2>2. 开局 / 加入</h2>
+    <h2>2. 开局 / 加入 · 共 <span id="totalGames">0</span> 局</h2>
     <div class="row">
       <button class="small" id="createBtn" onclick="createGame()">创建新局（执白）</button>
       <input type="number" id="joinId" placeholder="局号">
       <button class="small" id="joinBtn" onclick="joinGame()">加入（执黑）</button>
-      <button class="small" onclick="enterById()">直接进入对局</button>
+      <button class="small" onclick="enterById()">直接进入</button>
+      <button class="small" onclick="loadGames()">刷新列表</button>
     </div>
+    <div id="gameList"></div>
     <div class="status" id="lobbyStatus"></div>
   </div>
 
   <div class="card hidden" id="play">
-    <h2>3. 对局 · 局号 <span id="gid"></span></h2>
+    <h2>3. 对局 · 局号 <span id="gid"></span> <button class="small" onclick="backToLobby()" style="float:right">← 返回大厅</button></h2>
     <div id="sideBanner"></div>
     <div id="info"></div>
     <div id="board"></div>
@@ -88,13 +94,17 @@ const ABI = [
   "function resign(uint256) external",
   "function claimTimeout(uint256) external",
   "function games(uint256) view returns (uint256 board, address white, address black, uint64 lastMoveAt, uint32 moveCount, uint8 status, uint8 toMove)",
-  "function ownerOf(uint256) view returns (address)"
+  "function gameCount() view returns (uint256)",
+  "function ownerOf(uint256) view returns (address)",
+  "event Created(uint256 indexed gameId, address indexed white)",
+  "event Joined(uint256 indexed gameId, address indexed black)",
+  "event MovePlayed(uint256 indexed gameId, uint8 from, uint8 to, uint8 piece)",
+  "event Ended(uint256 indexed gameId, address indexed winner, uint8 reason)"
 ];
 const GLYPH = {1:"♙",2:"♘",3:"♗",4:"♖",5:"♕",6:"♔",7:"♟",8:"♞",9:"♝",10:"♜",11:"♛",12:"♚"};
-const STATUS = ["等待黑方加入","对局中","已结束"];
+const STATUS = ["🟡 等待加入","🟢 对局中","🏁 已结束"];
 let provider, signer, contract, me, gameId = 0, selected = -1, lastFrom = -1, lastTo = -1;
-let lastCells = null, lastWhiteToMove = true, mySide = 0; // myColorIsWhite
-let timerId = null, pollId = null;
+let timerId = null, pollId = null, lobbyPollId = null;
 
 async function connect() {
   const el = document.getElementById("connectStatus");
@@ -117,6 +127,9 @@ async function connect() {
     document.getElementById("connectBtn").disabled = true;
     document.getElementById("lobby").classList.remove("hidden");
     el.className = "status ok"; el.textContent = "连接成功";
+    loadGames();
+    if (lobbyPollId) clearInterval(lobbyPollId);
+    lobbyPollId = setInterval(() => { if (!document.getElementById("lobby").classList.contains("hidden")) loadGames(); }, 8000);
   } catch(e) { el.className="status err"; el.textContent = "失败: " + e.message; }
 }
 
@@ -124,8 +137,40 @@ window.ethereum?.on?.("accountsChanged", (a) => {
   me = a[0];
   const btn = document.getElementById("connectBtn");
   if (btn && me) btn.textContent = "已连接 " + me.slice(0,6) + "…" + me.slice(-4);
-  if (gameId) refresh();
+  if (gameId) refresh(); else loadGames();
 });
+
+// ---------- 对局列表 ----------
+
+async function loadGames() {
+  if (!contract) return;
+  const el = document.getElementById("gameList");
+  try {
+    const n = Number(await contract.gameCount());
+    document.getElementById("totalGames").textContent = n;
+    if (!n) { el.innerHTML = '<div class="status">还没有对局，点「创建新局」开第一桌</div>'; return; }
+    let html = "";
+    const from = Math.max(1, n - 19); // 最新 20 局，新的在上
+    for (let i = n; i >= from; i--) {
+      const g = await contract.games(i);
+      const status = Number(g[5]), toMove = Number(g[6]), mc = Number(g[4]);
+      const w = String(g[1]).slice(0,6) + "…";
+      const b = g[2] === "0x0000000000000000000000000000000000000000" || !g[2] ? "—" : String(g[2]).slice(0,6) + "…";
+      const mid = status === 1 ? ` · 第${mc}步 · 轮${Number(toMove)===0?"白":"黑"}` : "";
+      const mine = me && String(g[1]).toLowerCase() === me.toLowerCase();
+      const joinable = status === 0 && !mine;
+      html += `<div class="gamerow"><span>#${i} ${STATUS[status]} · 白 ${w} · 黑 ${b}${mid}</span>` +
+        (joinable ? `<button class="tiny" onclick="quickJoin(${i})">加入</button>` :
+         (status === 0 ? `<span class="status" style="margin:0">你的局</span>` : "")) + `</div>`;
+    }
+    el.innerHTML = html;
+  } catch(e) { el.innerHTML = '<div class="status err">列表加载失败: ' + (e?.shortMessage || e.message) + '</div>'; }
+}
+
+function quickJoin(id) {
+  document.getElementById("joinId").value = id;
+  joinGame();
+}
 
 // ---------- 开局 / 加入 ----------
 
@@ -171,9 +216,18 @@ function enterGame() {
   setPlay("", true);
   refresh();
   if (timerId) clearInterval(timerId);
-  timerId = setInterval(tick, 1000);   // 倒计时每秒走
+  timerId = setInterval(tick, 1000);
   if (pollId) clearInterval(pollId);
-  pollId = setInterval(refresh, 5000); // 每 5 秒自动同步对方走子
+  pollId = setInterval(refresh, 5000);
+}
+
+function backToLobby() {
+  document.getElementById("play").classList.add("hidden");
+  document.getElementById("lobby").classList.remove("hidden");
+  gameId = 0; selected = -1; hints.clear(); hintCaptures.clear();
+  if (timerId) { clearInterval(timerId); timerId = null; }
+  if (pollId) { clearInterval(pollId); pollId = null; }
+  loadGames();
 }
 
 // ---------- 走法合法性（LibMoves 的 JS 版，用于高亮提示） ----------
@@ -298,7 +352,6 @@ async function refresh() {
     const iAmWhite = me && me.toLowerCase() === g[1].toLowerCase();
     const myTurn = status === 1 && ((toMove === 0) === iAmWhite);
 
-    // 你是哪方 + 轮到谁（大横幅）
     const banner = document.getElementById("sideBanner");
     let txt, cls;
     if (status === 2) {
@@ -322,13 +375,11 @@ async function refresh() {
       (status === 1 ? ` · 剩余 <span id="timer"></span>` : "");
     if (status === 1) tick(g[3]);
 
-    // 只有轮到自己且未选中时才重绘（避免打断高亮）
     if (selected === -1) render(cells);
   } catch(e) { /* 静默，下一轮再试 */ }
 }
 
 function tick(lastMoveAt) {
-  // 提示文字 4 秒后自动消失，避免滞留误导
   if (statusUntil && Date.now() > statusUntil) {
     const s = document.getElementById("playStatus");
     s.textContent = ""; s.className = "status";
@@ -367,9 +418,17 @@ async function withGas(fn, args) {
     const gas = await fn.estimateGas(...args);
     return fn(...args, { gasLimit: gas * 115n / 100n });
   } catch(_) {
-    return fn(...args); // 估算失败时让 ethers 自己估
+    return fn(...args);
   }
 }
+
+function setPlay(t, ok) {
+  const el = document.getElementById("playStatus");
+  el.className = "status " + (ok ? "ok" : "err");
+  el.textContent = t;
+  statusUntil = t ? Date.now() + 4000 : 0;
+}
+let statusUntil = 0;
 </script>
 </body>
 </html>
