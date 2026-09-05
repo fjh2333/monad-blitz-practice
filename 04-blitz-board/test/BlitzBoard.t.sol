@@ -270,4 +270,20 @@ contract BlitzBoardTest is Test {
         // 象 a1→…：斜线在 5×5 内不会穿盘外；但目标盘外必须非法
         assertFalse(LibMoves.isLegal(LibBoard.OPENING, 0, 9, true)); // a1→b2 有兵，非法
     }
+
+    function test_AntiDiagonal_Slider() public pure {
+        // 回归：反斜线（df 与 dr 异号）此前被误判为非法
+        // 白后 d4(27)，黑兵 e3(20)：d4xe3 反斜线吃
+        uint256 b = LibBoard.set(0, 27, LibBoard.W_QUEEN);
+        b = LibBoard.set(b, 20, LibBoard.B_PAWN);
+        assertTrue(LibMoves.isLegal(b, 27, 20, true));
+        // 白象 e4(28) → d3(19)：反斜线
+        uint256 b2 = LibBoard.set(0, 28, LibBoard.W_BISHOP);
+        assertTrue(LibMoves.isLegal(b2, 28, 19, true));
+        // 反斜线穿过的中间格必须为空：后 d4(27) → b2(9)，中间 c3(18) 有子则非法
+        uint256 b3 = LibBoard.set(0, 27, LibBoard.W_QUEEN);
+        b3 = LibBoard.set(b3, 9, LibBoard.B_PAWN);
+        b3 = LibBoard.set(b3, 18, LibBoard.B_PAWN); // 挡路
+        assertFalse(LibMoves.isLegal(b3, 27, 9, true));
+    }
 }
