@@ -82,7 +82,25 @@ input[type=number] { width:110px; background:#0a0a0a; border:1px solid #333; col
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+<script>
+// ethers 多 CDN 兜底加载：现场网络可能拦某个 CDN
+function loadScript(src) {
+  return new Promise((ok, fail) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s); });
+}
+async function loadEthers() {
+  if (window.ethers) return true;
+  const cdns = [
+    "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js",
+    "https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js",
+    "https://unpkg.com/ethers@6.13.4/dist/ethers.umd.min.js",
+    "https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"
+  ];
+  for (const src of cdns) {
+    try { await loadScript(src); if (window.ethers) return true; } catch(_) {}
+  }
+  return false;
+}
+</script>
 <script>
 const CONTRACT_ADDRESS = "0xE2FaC0807C945118Fc93893ad81b4D477491Aa3D";
 const MONAD_CHAIN_ID = 10143;
@@ -110,6 +128,11 @@ async function connect() {
   const el = document.getElementById("connectStatus");
   try {
     if (!window.ethereum) { el.className="status err"; el.textContent="请先安装 MetaMask"; return; }
+    if (!window.ethers) {
+      el.className="status"; el.textContent="正在加载 ethers 库…";
+      const ok = await loadEthers();
+      if (!ok) { el.className="status err"; el.textContent="ethers 库加载失败（网络拦了 CDN），请检查网络后刷新重试"; return; }
+    }
     const acc = await window.ethereum.request({method:"eth_requestAccounts"});
     me = acc[0];
     let cid = parseInt(await window.ethereum.request({method:"eth_chainId"}), 16);
