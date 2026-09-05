@@ -17,19 +17,26 @@ button:hover { background:#6d4fd8; }
 button:disabled { background:#3a3a3a; color:#777; cursor:not-allowed; }
 button.connect { background:#2563eb; }
 button.small { width:auto; padding:8px 14px; font-size:13px; }
-input[type=number] { width:100%; background:#0a0a0a; border:1px solid #333; color:#e0e0e0; padding:10px; border-radius:8px; font-size:15px; margin-bottom:10px; }
-.status { font-size:12px; color:#888; margin-top:8px; word-break:break-all; }
+input[type=number] { width:110px; background:#0a0a0a; border:1px solid #333; color:#e0e0e0; padding:8px; border-radius:8px; font-size:14px; }
+.status { font-size:12px; color:#888; margin-top:8px; word-break:break-all; min-height:16px; }
 .status.ok { color:#4ade80; } .status.err { color:#f87171; }
 #gid { font-size:22px; font-weight:700; color:#836ef9; font-family:monospace; }
+#sideBanner { text-align:center; font-size:16px; font-weight:700; padding:10px; border-radius:8px; margin:8px 0; }
+.side-w { background:#1e293b; color:#93c5fd; }
+.side-b { background:#292524; color:#d6d3d1; }
+.side-turn { outline:2px solid #4ade80; }
 #board { display:grid; grid-template-columns:repeat(5,1fr); gap:3px; margin:10px 0; user-select:none; }
-.cell { aspect-ratio:1; display:flex; align-items:center; justify-content:center; font-size:30px; cursor:pointer; border-radius:6px; background:#2b2b2b; }
+.cell { aspect-ratio:1; display:flex; align-items:center; justify-content:center; font-size:30px; cursor:pointer; border-radius:6px; background:#2b2b2b; position:relative; }
 .cell.dark { background:#232323; }
 .cell.sel { outline:3px solid #836ef9; }
 .cell.last { outline:2px solid #ec4899; }
+.cell.hint::after { content:""; position:absolute; width:22%; height:22%; border-radius:50%; background:#4ade80aa; }
+.cell.hint.cap::after { width:80%; height:80%; background:transparent; border:3px solid #f87171; border-radius:8px; }
 .piece-w { color:#fff; text-shadow:0 0 3px #000; }
 .piece-b { color:#111; text-shadow:0 0 2px #888; }
 .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
 #info { font-size:13px; color:#bbb; margin:6px 0; }
+#timer { font-family:monospace; color:#fbbf24; }
 .hidden { display:none; }
 </style>
 </head>
@@ -48,7 +55,7 @@ input[type=number] { width:100%; background:#0a0a0a; border:1px solid #333; colo
     <h2>2. 开局 / 加入</h2>
     <div class="row">
       <button class="small" id="createBtn" onclick="createGame()">创建新局（执白）</button>
-      <input type="number" id="joinId" placeholder="局号" style="width:100px;background:#0a0a0a;border:1px solid #333;color:#e0e0e0;padding:8px;border-radius:8px;">
+      <input type="number" id="joinId" placeholder="局号">
       <button class="small" id="joinBtn" onclick="joinGame()">加入（执黑）</button>
       <button class="small" onclick="enterById()">直接进入对局</button>
     </div>
@@ -56,8 +63,8 @@ input[type=number] { width:100%; background:#0a0a0a; border:1px solid #333; colo
   </div>
 
   <div class="card hidden" id="play">
-    <h2>3. 对局</h2>
-    <div>局号 <span id="gid"></span></div>
+    <h2>3. 对局 · 局号 <span id="gid"></span></h2>
+    <div id="sideBanner"></div>
     <div id="info"></div>
     <div id="board"></div>
     <div class="row">
@@ -73,6 +80,7 @@ input[type=number] { width:100%; background:#0a0a0a; border:1px solid #333; colo
 <script>
 const CONTRACT_ADDRESS = "0xf9d3cE886C0fcE1c749C82d39B4B7B26092F4d06";
 const MONAD_CHAIN_ID = 10143;
+const TIMEOUT = 180;
 const ABI = [
   "function create() returns (uint256)",
   "function join(uint256) external",
@@ -80,12 +88,13 @@ const ABI = [
   "function resign(uint256) external",
   "function claimTimeout(uint256) external",
   "function games(uint256) view returns (uint256 board, address white, address black, uint64 lastMoveAt, uint32 moveCount, uint8 status, uint8 toMove)",
-  "function ownerOf(uint256) view returns (address)",
-  "event MovePlayed(uint256 indexed gameId, uint8 from, uint8 to, uint8 piece)"
+  "function ownerOf(uint256) view returns (address)"
 ];
 const GLYPH = {1:"♙",2:"♘",3:"♗",4:"♖",5:"♕",6:"♔",7:"♟",8:"♞",9:"♝",10:"♜",11:"♛",12:"♚"};
 const STATUS = ["等待黑方加入","对局中","已结束"];
 let provider, signer, contract, me, gameId = 0, selected = -1, lastFrom = -1, lastTo = -1;
+let lastCells = null, lastWhiteToMove = true, mySide = 0; // myColorIsWhite
+let timerId = null, pollId = null;
 
 async function connect() {
   const el = document.getElementById("connectStatus");
@@ -114,63 +123,109 @@ async function connect() {
 window.ethereum?.on?.("accountsChanged", (a) => {
   me = a[0];
   const btn = document.getElementById("connectBtn");
-  if (btn && me) { btn.textContent = "已连接 " + me.slice(0,6) + "…" + me.slice(-4); }
+  if (btn && me) btn.textContent = "已连接 " + me.slice(0,6) + "…" + me.slice(-4);
   if (gameId) refresh();
 });
 
+// ---------- 开局 / 加入 ----------
+
 async function createGame() {
   const el = document.getElementById("lobbyStatus");
-  el.className="status"; el.textContent="发送 create 交易…";
+  el.className="status"; el.textContent="发送 create 交易，请在 MetaMask 确认…";
   try {
-    const tx = await withGas(contract.create());
-    el.textContent = "已确认，等待上链… hash: " + tx.hash.slice(0,10) + "…";
+    const tx = await withGas(contract.create, []);
+    el.textContent = "已签名，等待上链…";
     const rc = await tx.wait();
     let id = 0;
     for (const log of rc.logs) {
-      try { const parsed = contract.interface.parseLog(log); if (parsed?.name === "Created") { id = Number(parsed.args[0]); break; } } catch(_) {}
+      try { const p = contract.interface.parseLog(log); if (p?.name === "Created") { id = Number(p.args[0]); break; } } catch(_) {}
     }
-    if (!id) id = Number(await contract.gameCount()); // 兜底：读最新局号
-    gameId = id;
-    enterGame();
-  } catch(e) {
-    el.className="status err"; el.textContent = "create 失败: " + (e?.shortMessage || e.message);
-  }
+    if (!id) id = Number(await contract.gameCount());
+    gameId = id; enterGame();
+  } catch(e) { el.className="status err"; el.textContent = "create 失败: " + (e?.shortMessage || e.message); }
 }
 
 async function joinGame() {
   const el = document.getElementById("lobbyStatus");
   gameId = Number(document.getElementById("joinId").value);
   if (!gameId) { el.className="status err"; el.textContent="请输入局号"; return; }
-  el.className="status"; el.textContent="发送 join 交易…";
+  el.className="status"; el.textContent="发送 join 交易，请在 MetaMask 确认…";
   try {
-    const tx = await withGas(contract.join(gameId));
-    el.textContent = "已确认，等待上链…";
+    const tx = await withGas(contract.join, [gameId]);
+    el.textContent = "已签名，等待上链…";
     await tx.wait();
     enterGame();
-  } catch(e) {
-    el.className="status err"; el.textContent = "join 失败: " + (e?.shortMessage || e.message);
-  }
+  } catch(e) { el.className="status err"; el.textContent = "join 失败: " + (e?.shortMessage || e.message); }
 }
 
 function enterById() {
   const id = Number(document.getElementById("joinId").value);
-  if (!id) { const el = document.getElementById("lobbyStatus"); el.className="status err"; el.textContent="请先在局号框输入要进入的局号"; return; }
-  gameId = id;
-  enterGame();
+  if (!id) { const el = document.getElementById("lobbyStatus"); el.className="status err"; el.textContent="请先在局号框输入局号"; return; }
+  gameId = id; enterGame();
 }
 
 function enterGame() {
   document.getElementById("lobby").classList.add("hidden");
   document.getElementById("play").classList.remove("hidden");
   document.getElementById("gid").textContent = gameId;
+  setPlay("", true);
   refresh();
+  if (timerId) clearInterval(timerId);
+  timerId = setInterval(tick, 1000);   // 倒计时每秒走
+  if (pollId) clearInterval(pollId);
+  pollId = setInterval(refresh, 5000); // 每 5 秒自动同步对方走子
 }
+
+// ---------- 走法合法性（LibMoves 的 JS 版，用于高亮提示） ----------
+function inPlay(sq) { return sq < 64 && (sq % 8) < 5 && Math.floor(sq/8) < 5; }
+function colorOf(p) { return p === 0 ? 0 : (p <= 6 ? 1 : 2); }
+function moveLegal(cells, from, to, whiteToMove) {
+  if (!inPlay(from) || !inPlay(to) || from === to) return false;
+  const piece = cells[from];
+  if (!piece) return false;
+  if (whiteToMove !== (piece <= 6)) return false;
+  const target = cells[to];
+  if (target && colorOf(target) === colorOf(piece)) return false;
+  const f1 = from % 8, r1 = (from/8)|0, f2 = to % 8, r2 = (to/8)|0;
+  const df = f2-f1, dr = r2-r1, adf = Math.abs(df), adr = Math.abs(dr);
+  const p = piece <= 6 ? piece : piece - 6;
+  if (p === 1) {
+    const dir = whiteToMove ? 1 : -1;
+    if (df === 0 && dr === dir && !target) return true;
+    if (Math.abs(df) === 1 && dr === dir && target) return true;
+    return false;
+  }
+  if (p === 2) return (adf===1&&adr===2)||(adf===2&&adr===1);
+  if (p === 6) return adf <= 1 && adr <= 1;
+  const straight = (df===0) !== (dr===0), diagonal = adf === adr;
+  if (p===4 && !straight) return false;
+  if (p===3 && !diagonal) return false;
+  if (p===5 && !straight && !diagonal) return false;
+  const sf = Math.sign(df), sr = Math.sign(dr);
+  let cf = f1+sf, cr = r1+sr;
+  while (!(cf===f2 && cr===r2)) {
+    if (cf<0||cf>7||cr<0||cr>7) return false;
+    const sq = cf + cr*8;
+    if (!inPlay(sq) || cells[sq]) return false;
+    cf+=sf; cr+=sr;
+  }
+  return true;
+}
+function legalTargets(cells, from, whiteToMove) {
+  const out = [];
+  for (let to = 0; to < 64; to++) if (moveLegal(cells, from, to, whiteToMove)) out.push(to);
+  return out;
+}
+
+// ---------- 棋盘渲染 ----------
 
 function decodeBoard(board) {
   const b = BigInt(board), cells = [];
   for (let sq = 0; sq < 64; sq++) cells.push(Number((b >> BigInt(sq*4)) & 15n));
   return cells;
 }
+
+let hints = new Set(), hintCaptures = new Set();
 
 function render(cells) {
   const el = document.getElementById("board");
@@ -183,76 +238,121 @@ function render(cells) {
       d.className = "cell" + ((file+rank)%2 ? " dark" : "");
       if (sq === selected) d.classList.add("sel");
       if (sq === lastFrom || sq === lastTo) d.classList.add("last");
+      if (hints.has(sq)) d.classList.add("hint" + (hintCaptures.has(sq) ? " hintcap" : ""));
+      if (hintCaptures.has(sq)) d.classList.add("hint");
       if (p) { d.textContent = GLYPH[p]; d.classList.add(p <= 6 ? "piece-w" : "piece-b"); }
-      d.onclick = () => onCell(sq, p);
+      d.onclick = () => onCell(sq);
       el.appendChild(d);
     }
   }
 }
 
-async function onCell(sq, piece) {
+async function onCell(sq) {
   if (!gameId) return;
   const g = await contract.games(gameId);
+  const cells = decodeBoard(g[0]);
   const status = Number(g[5]), toMove = Number(g[6]);
   if (status !== 1) { setPlay("对局未在进行中", false); return; }
-  const myColorIsWhite = me.toLowerCase() === g[1].toLowerCase();
-  const myTurn = (toMove === 0) === myColorIsWhite;
-  if (!myTurn) { setPlay("还没轮到你", false); return; }
+  const iAmWhite = me.toLowerCase() === g[1].toLowerCase();
+  const myTurn = (toMove === 0) === iAmWhite;
+  if (!myTurn) { setPlay("还没轮到你（你执" + (iAmWhite ? "白" : "黑") + "）", false); return; }
+
   if (selected === -1) {
+    const piece = cells[sq];
     if (!piece) return;
-    const mine = myColorIsWhite ? (piece >= 1 && piece <= 6) : (piece >= 7 && piece <= 12);
+    const mine = iAmWhite ? (piece >= 1 && piece <= 6) : (piece >= 7 && piece <= 12);
     if (!mine) { setPlay("这不是你的棋子", false); return; }
-    selected = sq; render(decodeBoard(g[0]));
+    selected = sq;
+    hints = new Set(); hintCaptures = new Set();
+    for (const t of legalTargets(cells, sq, iAmWhite)) { hints.add(t); if (cells[t]) hintCaptures.add(t); }
+    render(cells);
     return;
   }
-  if (sq === selected) { selected = -1; render(decodeBoard(g[0])); return; }
-  const el = document.getElementById("playStatus");
-  el.className="status"; el.textContent="发送 move 交易…";
+  if (sq === selected) { selected = -1; hints.clear(); hintCaptures.clear(); render(cells); return; }
+  if (!hints.has(sq)) { setPlay("这步不合法（绿点=可走，红框=可吃）", false); return; }
+
+  setPlay("发送 move 交易，请在 MetaMask 确认…", true);
   try {
-    const tx = await withGas(contract.move(gameId, selected, sq));
+    const tx = await withGas(contract.move, [gameId, selected, sq]);
+    setPlay("已签名，等待上链…", true);
     await tx.wait();
-    const rc = await provider.getTransactionReceipt(tx.hash);
-    for (const log of rc.logs) {
-      try { const parsed = contract.interface.parseLog(log); if (parsed?.name === "MovePlayed") { lastFrom = Number(parsed.args[1]); lastTo = Number(parsed.args[2]); } } catch(_) {}
-    }
-    selected = -1;
-    el.className="status ok"; el.textContent="已上链 ✓";
+    selected = -1; hints.clear(); hintCaptures.clear();
+    setPlay("已上链 ✓", true);
     refresh();
-  } catch(e) { el.className="status err"; el.textContent="走子失败: " + (e?.shortMessage || e.message); selected = -1; refresh(); }
+  } catch(e) {
+    setPlay("走子失败: " + (e?.shortMessage || e.message), false);
+    selected = -1; hints.clear(); hintCaptures.clear(); refresh();
+  }
 }
 
+// ---------- 状态刷新 ----------
+
 async function refresh() {
-  if (!gameId) return;
+  if (!gameId || !contract) return;
   try {
     const g = await contract.games(gameId);
     const cells = decodeBoard(g[0]);
-    render(cells);
     const status = Number(g[5]), toMove = Number(g[6]), mc = Number(g[4]);
-    let s = `状态: ${STATUS[status]} · 第 ${mc} 步 · 轮到 ${toMove === 0 ? "白方" : "黑方"}`;
+    const iAmWhite = me && me.toLowerCase() === g[1].toLowerCase();
+    const myTurn = status === 1 && ((toMove === 0) === iAmWhite);
+
+    // 你是哪方 + 轮到谁（大横幅）
+    const banner = document.getElementById("sideBanner");
+    let txt, cls;
     if (status === 2) {
       let owner = "";
       try { owner = await contract.ownerOf(gameId); } catch(_) {}
-      s += ` · 奖杯 NFT #${gameId} → ${owner ? owner.slice(0,6)+"…"+owner.slice(-4) : "无"}`;
+      const iWon = owner && me && owner.toLowerCase() === me.toLowerCase();
+      txt = iWon ? "🏆 你赢了！奖杯 NFT #" + gameId + " 已入钱包" : "对局结束 · 奖杯 → " + (owner ? owner.slice(0,6)+"…"+owner.slice(-4) : "无");
+      cls = "side-w";
+    } else if (status === 0) {
+      txt = "等待黑方加入…（你执白 ⚪）";
+      cls = "side-w";
+    } else {
+      txt = (myTurn ? "▶ 轮到你走！（你执" : "⏳ 等待对方…（你执") + (iAmWhite ? "白 ⚪" : "黑 ⚫") + "）";
+      cls = (iAmWhite ? "side-w" : "side-b") + (myTurn ? " side-turn" : "");
     }
-    if (status === 1) {
-      const t = Number(g[3]);
-      s += ` · 剩余 ${Math.max(0, 180 - (Math.floor(Date.now()/1000) - t))}s`;
-    }
-    document.getElementById("info").textContent = s;
-  } catch(e) { setPlay("读取失败: " + e.message, false); }
+    banner.className = txt ? cls : "hidden";
+    banner.textContent = txt;
+
+    document.getElementById("info").innerHTML =
+      `状态: ${STATUS[status]} · 第 ${mc} 步 · 轮到 <b>${toMove === 0 ? "白方" : "黑方"}</b>` +
+      (status === 1 ? ` · 剩余 <span id="timer"></span>` : "");
+    if (status === 1) tick(g[3]);
+
+    // 只有轮到自己且未选中时才重绘（避免打断高亮）
+    if (selected === -1) render(cells);
+  } catch(e) { /* 静默，下一轮再试 */ }
+}
+
+function tick(lastMoveAt) {
+  const el = document.getElementById("timer");
+  if (!el) return;
+  if (tick.last === undefined || lastMoveAt !== undefined) tick.last = lastMoveAt;
+  const left = Math.max(0, TIMEOUT - (Math.floor(Date.now()/1000) - Number(tick.last)));
+  el.textContent = left + "s";
 }
 
 async function resign() {
   if (!confirm("确定认输？")) return;
-  const tx = await withGas(contract.resign(gameId)); await tx.wait(); refresh();
+  setPlay("发送认输交易…", true);
+  try { const tx = await withGas(contract.resign, [gameId]); await tx.wait(); setPlay("已认输", true); refresh(); }
+  catch(e) { setPlay("失败: " + (e?.shortMessage || e.message), false); }
 }
 async function claimTimeout() {
-  const tx = await withGas(contract.claimTimeout(gameId)); await tx.wait(); refresh();
+  setPlay("发送超时判定交易…", true);
+  try { const tx = await withGas(contract.claimTimeout, [gameId]); await tx.wait(); refresh(); }
+  catch(e) { setPlay("失败: " + (e?.shortMessage || e.message), false); }
 }
 
-async function withGas(call) {
-  const gas = await call.estimateGas();
-  return call({ gasLimit: gas * 115n / 100n }); // Monad 按 limit 收费，只加 15%
+// Monad 按 gas limit 收费：估算后只加 15%，绝不写死大数
+async function withGas(fn, args) {
+  try {
+    const gas = await fn.estimateGas(...args);
+    return fn(...args, { gasLimit: gas * 115n / 100n });
+  } catch(_) {
+    return fn(...args); // 估算失败时让 ethers 自己估
+  }
 }
 
 function setPlay(t, ok) { const el = document.getElementById("playStatus"); el.className = "status " + (ok ? "ok" : "err"); el.textContent = t; }
