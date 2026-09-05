@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blitz Board — Monad 闪电棋</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#0a0a0a; color:#e0e0e0; min-height:100vh; display:flex; justify-content:center; padding:32px 16px; }
+.wrap { max-width:520px; width:100%; }
+h1 { text-align:center; font-size:26px; margin-bottom:4px; background:linear-gradient(135deg,#836ef9,#ec4899); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.sub { text-align:center; color:#888; font-size:13px; margin-bottom:24px; }
+.card { background:#161616; border:1px solid #2a2a2a; border-radius:12px; padding:18px; margin-bottom:16px; }
+.card h2 { font-size:14px; color:#aaa; margin-bottom:12px; }
+button { background:#836ef9; color:#fff; border:none; padding:11px 20px; border-radius:8px; font-size:14px; cursor:pointer; width:100%; }
+button:hover { background:#6d4fd8; }
+button:disabled { background:#3a3a3a; color:#777; cursor:not-allowed; }
+button.connect { background:#2563eb; }
+button.small { width:auto; padding:8px 14px; font-size:13px; }
+input[type=number] { width:100%; background:#0a0a0a; border:1px solid #333; color:#e0e0e0; padding:10px; border-radius:8px; font-size:15px; margin-bottom:10px; }
+.status { font-size:12px; color:#888; margin-top:8px; word-break:break-all; }
+.status.ok { color:#4ade80; } .status.err { color:#f87171; }
+#gid { font-size:22px; font-weight:700; color:#836ef9; font-family:monospace; }
+#board { display:grid; grid-template-columns:repeat(5,1fr); gap:3px; margin:10px 0; user-select:none; }
+.cell { aspect-ratio:1; display:flex; align-items:center; justify-content:center; font-size:30px; cursor:pointer; border-radius:6px; background:#2b2b2b; }
+.cell.dark { background:#232323; }
+.cell.sel { outline:3px solid #836ef9; }
+.cell.last { outline:2px solid #ec4899; }
+.piece-w { color:#fff; text-shadow:0 0 3px #000; }
+.piece-b { color:#111; text-shadow:0 0 2px #888; }
+.row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+#info { font-size:13px; color:#bbb; margin:6px 0; }
+.hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Blitz Board</h1>
+  <p class="sub">5×5 闪电棋 · 每步一笔交易 · 吃王即胜 · Monad Testnet</p>
+
+  <div class="card">
+    <h2>1. 连接钱包</h2>
+    <button class="connect" id="connectBtn" onclick="connect()">连接 MetaMask</button>
+    <div class="status" id="connectStatus"></div>
+  </div>
+
+  <div class="card hidden" id="lobby">
+    <h2>2. 开局 / 加入</h2>
+    <div class="row">
+      <button class="small" id="createBtn" onclick="createGame()">创建新局（执白）</button>
+      <input type="number" id="joinId" placeholder="局号" style="width:100px;background:#0a0a0a;border:1px solid #333;color:#e0e0e0;padding:8px;border-radius:8px;">
+      <button class="small" id="joinBtn" onclick="joinGame()">加入（执黑）</button>
+    </div>
+    <div class="status" id="lobbyStatus"></div>
+  </div>
+
+  <div class="card hidden" id="play">
+    <h2>3. 对局</h2>
+    <div>局号 <span id="gid"></span></div>
+    <div id="info"></div>
+    <div id="board"></div>
+    <div class="row">
+      <button class="small" onclick="refresh()">刷新</button>
+      <button class="small" id="resignBtn" onclick="resign()">认输</button>
+      <button class="small" id="timeoutBtn" onclick="claimTimeout()">对手超时(180s)判负</button>
+    </div>
+    <div class="status" id="playStatus"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+<script>
+const CONTRACT_ADDRESS = "0xf9d3cE886C0fcE1c749C82d39B4B7B26092F4d06";
+const MONAD_CHAIN_ID = 10143;
+const ABI = [
+  "function create() returns (uint256)",
+  "function join(uint256) external",
+  "function move(uint256,uint8,uint8) external",
+  "function resign(uint256) external",
+  "function claimTimeout(uint256) external",
+  "function games(uint256) view returns (uint256 board, address white, address black, uint64 lastMoveAt, uint32 moveCount, uint8 status, uint8 toMove)",
+  "function ownerOf(uint256) view returns (address)",
+  "event MovePlayed(uint256 indexed gameId, uint8 from, uint8 to, uint8 piece)"
+];
+const GLYPH = {1:"♙",2:"♘",3:"♗",4:"♖",5:"♕",6:"♔",7:"♟",8:"♞",9:"♝",10:"♜",11:"♛",12:"♚"};
+const STATUS = ["等待黑方加入","对局中","已结束"];
+let provider, signer, contract, me, gameId = 0, selected = -1, lastFrom = -1, lastTo = -1;
+
+async function connect() {
+  const el = document.getElementById("connectStatus");
+  try {
+    if (!window.ethereum) { el.className="status err"; el.textContent="请先安装 MetaMask"; return; }
+    const acc = await window.ethereum.request({method:"eth_requestAccounts"});
+    me = acc[0];
+    let cid = parseInt(await window.ethereum.request({method:"eth_chainId"}), 16);
+    if (cid !== MONAD_CHAIN_ID) {
+      try { await window.ethereum.request({method:"wallet_switchEthereumChain", params:[{chainId:"0x279f"}]}); }
+      catch(e) {
+        if (e.code === 4902) await window.ethereum.request({method:"wallet_addEthereumChain", params:[{chainId:"0x279f", chainName:"Monad Testnet", rpcUrls:["https://testnet-rpc.monad.xyz"], nativeCurrency:{name:"MON",symbol:"MON",decimals:18}, blockExplorerUrls:["https://testnet.monadvision.com"]}]});
+        else throw e;
+      }
+    }
+    provider = new ethers.BrowserProvider(window.ethereum);
+    signer = await provider.getSigner();
+    contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+    document.getElementById("connectBtn").textContent = "已连接 " + me.slice(0,6) + "…" + me.slice(-4);
+    document.getElementById("connectBtn").disabled = true;
+    document.getElementById("lobby").classList.remove("hidden");
+    el.className = "status ok"; el.textContent = "连接成功";
+  } catch(e) { el.className="status err"; el.textContent = "失败: " + e.message; }
+}
+
+window.ethereum?.on?.("accountsChanged", (a) => { me = a[0]; if (gameId) refresh(); });
+
+async function createGame() {
+  const el = document.getElementById("lobbyStatus");
+  el.className="status"; el.textContent="发送 create 交易…";
+  const tx = await withGas(contract.create());
+  await tx.wait();
+  const rc = await provider.getTransactionReceipt(tx.hash);
+  gameId = Number(rc.logs[0].topics[1]); // Created event 第一个 indexed
+  enterGame();
+}
+
+async function joinGame() {
+  const el = document.getElementById("lobbyStatus");
+  gameId = Number(document.getElementById("joinId").value);
+  if (!gameId) { el.className="status err"; el.textContent="请输入局号"; return; }
+  el.className="status"; el.textContent="发送 join 交易…";
+  const tx = await withGas(contract.join(gameId));
+  await tx.wait();
+  enterGame();
+}
+
+function enterGame() {
+  document.getElementById("lobby").classList.add("hidden");
+  document.getElementById("play").classList.remove("hidden");
+  document.getElementById("gid").textContent = gameId;
+  refresh();
+}
+
+function decodeBoard(board) {
+  const b = BigInt(board), cells = [];
+  for (let sq = 0; sq < 64; sq++) cells.push(Number((b >> BigInt(sq*4)) & 15n));
+  return cells;
+}
+
+function render(cells) {
+  const el = document.getElementById("board");
+  el.innerHTML = "";
+  for (let rank = 4; rank >= 0; rank--) {
+    for (let file = 0; file < 5; file++) {
+      const sq = file + rank*8;
+      const p = cells[sq];
+      const d = document.createElement("div");
+      d.className = "cell" + ((file+rank)%2 ? " dark" : "");
+      if (sq === selected) d.classList.add("sel");
+      if (sq === lastFrom || sq === lastTo) d.classList.add("last");
+      if (p) { d.textContent = GLYPH[p]; d.classList.add(p <= 6 ? "piece-w" : "piece-b"); }
+      d.onclick = () => onCell(sq, p);
+      el.appendChild(d);
+    }
+  }
+}
+
+async function onCell(sq, piece) {
+  if (!gameId) return;
+  const g = await contract.games(gameId);
+  const status = Number(g[5]), toMove = Number(g[6]);
+  if (status !== 1) { setPlay("对局未在进行中", false); return; }
+  const myColorIsWhite = me.toLowerCase() === g[1].toLowerCase();
+  const myTurn = (toMove === 0) === myColorIsWhite;
+  if (!myTurn) { setPlay("还没轮到你", false); return; }
+  if (selected === -1) {
+    if (!piece) return;
+    const mine = myColorIsWhite ? (piece >= 1 && piece <= 6) : (piece >= 7 && piece <= 12);
+    if (!mine) { setPlay("这不是你的棋子", false); return; }
+    selected = sq; render(decodeBoard(g[0]));
+    return;
+  }
+  if (sq === selected) { selected = -1; render(decodeBoard(g[0])); return; }
+  const el = document.getElementById("playStatus");
+  el.className="status"; el.textContent="发送 move 交易…";
+  try {
+    const tx = await withGas(contract.move(gameId, selected, sq));
+    await tx.wait();
+    const rc = await provider.getTransactionReceipt(tx.hash);
+    for (const log of rc.logs) {
+      try { const parsed = contract.interface.parseLog(log); if (parsed?.name === "MovePlayed") { lastFrom = Number(parsed.args[1]); lastTo = Number(parsed.args[2]); } } catch(_) {}
+    }
+    selected = -1;
+    el.className="status ok"; el.textContent="已上链 ✓";
+    refresh();
+  } catch(e) { el.className="status err"; el.textContent="走子失败: " + (e?.shortMessage || e.message); selected = -1; refresh(); }
+}
+
+async function refresh() {
+  if (!gameId) return;
+  try {
+    const g = await contract.games(gameId);
+    const cells = decodeBoard(g[0]);
+    render(cells);
+    const status = Number(g[5]), toMove = Number(g[6]), mc = Number(g[4]);
+    let s = `状态: ${STATUS[status]} · 第 ${mc} 步 · 轮到 ${toMove === 0 ? "白方" : "黑方"}`;
+    if (status === 2) {
+      let owner = "";
+      try { owner = await contract.ownerOf(gameId); } catch(_) {}
+      s += ` · 奖杯 NFT #${gameId} → ${owner ? owner.slice(0,6)+"…"+owner.slice(-4) : "无"}`;
+    }
+    if (status === 1) {
+      const t = Number(g[3]);
+      s += ` · 剩余 ${Math.max(0, 180 - (Math.floor(Date.now()/1000) - t))}s`;
+    }
+    document.getElementById("info").textContent = s;
+  } catch(e) { setPlay("读取失败: " + e.message, false); }
+}
+
+async function resign() {
+  if (!confirm("确定认输？")) return;
+  const tx = await withGas(contract.resign(gameId)); await tx.wait(); refresh();
+}
+async function claimTimeout() {
+  const tx = await withGas(contract.claimTimeout(gameId)); await tx.wait(); refresh();
+}
+
+async function withGas(call) {
+  const gas = await call.estimateGas();
+  return call({ gasLimit: gas * 115n / 100n }); // Monad 按 limit 收费，只加 15%
+}
+
+function setPlay(t, ok) { const el = document.getElementById("playStatus"); el.className = "status " + (ok ? "ok" : "err"); el.textContent = t; }
+</script>
+</body>
+</html>
