@@ -238,8 +238,8 @@ function render(cells) {
       d.className = "cell" + ((file+rank)%2 ? " dark" : "");
       if (sq === selected) d.classList.add("sel");
       if (sq === lastFrom || sq === lastTo) d.classList.add("last");
-      if (hints.has(sq)) d.classList.add("hint" + (hintCaptures.has(sq) ? " hintcap" : ""));
-      if (hintCaptures.has(sq)) d.classList.add("hint");
+      if (hints.has(sq)) d.classList.add("hint");
+      if (hintCaptures.has(sq)) d.classList.add("hintcap");
       if (p) { d.textContent = GLYPH[p]; d.classList.add(p <= 6 ? "piece-w" : "piece-b"); }
       d.onclick = () => onCell(sq);
       el.appendChild(d);
