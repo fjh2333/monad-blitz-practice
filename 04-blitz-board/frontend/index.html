@@ -423,14 +423,6 @@ async function withGas(fn, args) {
     return fn(...args);
   }
 }
-
-function setPlay(t, ok) {
-  const el = document.getElementById("playStatus");
-  el.className = "status " + (ok ? "ok" : "err");
-  el.textContent = t;
-  statusUntil = t ? Date.now() + 4000 : 0;
-}
-let statusUntil = 0;
 </script>
 </body>
 </html>
